@@ -107,7 +107,7 @@ internal sealed class DurableWorkflowRunner
     /// <param name="workflowInput">The workflow input envelope containing workflow input and metadata.</param>
     /// <param name="logger">The replay-safe logger for orchestration logging.</param>
     /// <returns>The result of the workflow execution.</returns>
-    /// <exception cref="InvalidOperationException">Thrown when the specified workflow is not found.</exception>
+    /// <exception cref="InvalidOperationException">Thrown when the specified workflow is not found or exceeds the maximum superstep limit.</exception>
     internal async Task<DurableWorkflowResult> RunWorkflowOrchestrationAsync(
         TaskOrchestrationContext context,
         DurableWorkflowInput<object> workflowInput,
@@ -195,12 +195,8 @@ internal sealed class DurableWorkflowRunner
                 break;
             }
 
-            // Check if we've reached the limit and still have work remaining
             int remainingExecutors = CountRemainingExecutors(state.MessageQueues);
-            if (superstep == MaxSupersteps && remainingExecutors > 0)
-            {
-                logger.LogWorkflowMaxSuperstepsExceeded(context.InstanceId, MaxSupersteps, remainingExecutors);
-            }
+            ThrowIfMaxSuperstepsExceeded(context.InstanceId, superstep, remainingExecutors, logger);
         }
 
         // Publish final events for live streaming (skip during replay)
@@ -234,6 +230,25 @@ internal sealed class DurableWorkflowRunner
     private static int CountRemainingExecutors(Dictionary<string, Queue<DurableMessageEnvelope>> messageQueues)
     {
         return messageQueues.Count(kvp => kvp.Value.Count > 0);
+    }
+
+    /// <summary>
+    /// Fails a workflow that reaches the superstep limit while work is still queued.
+    /// </summary>
+    internal static void ThrowIfMaxSuperstepsExceeded(
+        string instanceId,
+        int superstep,
+        int remainingExecutors,
+        ILogger logger)
+    {
+        if (superstep != MaxSupersteps || remainingExecutors <= 0)
+        {
+            return;
+        }
+
+        logger.LogWorkflowMaxSuperstepsExceeded(instanceId, MaxSupersteps, remainingExecutors);
+        throw new InvalidOperationException(
+            $"Workflow '{instanceId}' exceeded the maximum superstep limit ({MaxSupersteps}) with {remainingExecutors} executor(s) still queued.");
     }
 
     private static async Task<string[]> DispatchExecutorsInParallelAsync(
